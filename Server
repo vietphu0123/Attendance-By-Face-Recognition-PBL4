@@ -1,0 +1,253 @@
+import socket
+import os
+from _thread import *
+import io
+import socket
+import struct
+from PIL import Image
+from cv2 import cv2
+import numpy
+import sys
+import pyodbc
+import tkinter as tk
+import smtplib
+from datetime import date
+from datetime import time
+import datetime
+import threading
+
+server = 'localhost' 
+database = 'PBL2' 
+username = 'sa1' 
+password = 'sa1'
+option = 'Yes'
+con = pyodbc.connect('DRIVER={ODBC Driver 17 for SQL Server};SERVER='+server+';DATABASE='+ database +';UID='+username+';PWD='+ password+';MARS_Connection='+option)
+cursor = con.cursor()
+face_casade=cv2.CascadeClassifier("C:\\Users\\vietphu\\Downloads\\opencv\\sources\\data\\haarcascades\\haarcascade_frontalface_alt.xml")
+recognizer =cv2.face.LBPHFaceRecognizer_create()
+fontface=cv2.FONT_HERSHEY_SIMPLEX
+
+################################
+hostname = socket.gethostname()
+local_ip = socket.gethostbyname(hostname)
+
+print(local_ip)
+ServerSocket = socket.socket()
+host = '192.168.43.205'
+port = 9000
+ThreadCount = 0
+try:
+    ServerSocket.bind((host, port))
+except socket.error as e:
+    print(str(e))
+
+print('Waitiing for a Connection..')
+ServerSocket.listen(5)
+###############################
+
+now = datetime.datetime.now()
+today6am = now.replace(hour=8, minute=0, second=0, microsecond=0)
+today8am = now.replace(hour=10, minute=0, second=0, microsecond=0)
+
+def send_mail(id):
+    profile=getEmail(id)
+    if(profile!=None):                      
+        connect=smtplib.SMTP("smtp.gmail.com", 587)
+        connect.ehlo()
+        connect.starttls()
+        connect.login("vietphu3210@gmail.com","mirhacqbzykdtybs")
+        connect.sendmail("vietphu3210@gmail.com",str(profile[0]),"da den truong")
+    
+
+def getProfile(id):  #Khi mình truyền vào 1 id thì hàm này trả về cho mình Tên của id đó trong database
+    cur = con.cursor()
+    cur.execute("SELECT Name FROM Information where Id="+str(id))
+    profile=None
+    for row in cur:
+       profile=row
+    return profile
+def getEmail(id):
+    cur = con.cursor()
+    cur.execute("SELECT Mail FROM Information where Id="+str(id))
+    profile=None
+    for row in cur:
+       profile=row
+    return profile
+def getAttendace(id):
+    check=False
+    now=date.today()
+    cursor.execute("SELECT * FROM attendance WHERE Id="+str(id)+"AND ngay='"+str(now)+"'")
+    if cursor.fetchone():
+        check=True
+    return check
+def setAttendace(id):
+    cur=con.cursor()
+    now=date.today()
+    now1=datetime.datetime.now()
+    current_time=now1.strftime("%H:%M:%S")
+    cur.execute("INSERT INTO attendance VALUES ("+str(id)+",'"+str(now)+"','"+str(current_time)+"')")
+    con.commit()
+def check_face(roi_gay,name_temp,check):
+    for paths in os.listdir('C:\\Users\\vietphu\\Documents\\recognizer'):
+        recognizer =cv2.face.LBPHFaceRecognizer_create()
+        recognizer.read('C:\\Users\\vietphu\\Documents\\recognizer\\'+str(paths))
+            
+        id,confidence=recognizer.predict(roi_gay)
+        print(id)
+        if confidence<40:
+            profile=getProfile(id)
+            if(profile!=None):                      
+                name_temp=str(profile[0])
+                check=1
+                return (id,check,name_temp)
+                 
+    check=0
+    id=-1
+    name_temp=''
+    return (id,check,name_temp)  
+def process(faces,gray,conn):
+    if len(faces)==0:
+        print("aaa")
+        conn.sendall(str.encode("unknow")) 
+    a=0
+    for (x,y,w,h) in faces :
+        check=0
+        i=0
+        a=1
+        name_temp=''
+        roi_gay=gray[y:y+h,x:x+w]
+        # nhận diện ảnh trả về hai kiểu id và độ tin cậy(confidence)
+        id,check,name_temp=check_face(roi_gay,name_temp,check)
+        if check==1:
+            check_attendance=getAttendace(id)
+            if check_attendance:
+                print(name_temp) 
+                atten="da diem danh: "+str(name_temp)
+                conn.sendall(str.encode(atten)) 
+            else:                           
+                if today6am<now<today8am:
+                    setAttendace(id)
+                    send_mail(id)
+                else:
+                    print("Chưa tới giờ")
+                    conn.sendall(str.encode("chua toi gio !")) 
+        else:
+            conn.sendall(str.encode("unknow")) 
+
+def threaded_client(conn):
+    conn.send(str.encode('Welcome to the Server\n'))        
+    idn=''
+    name=''
+    mail=''
+    address=""
+    while True:
+        data = conn.recv(2048)
+        reply = 'Server Says: ' 
+        # if not data:
+        #     break
+        print(data.decode('utf-8'))
+        if data.decode('utf-8')=="B":
+            reply = "B"
+            conn.sendall(str.encode(reply))        
+            connection = conn.makefile('rb')
+            try:
+                while True:
+                    image_len = struct.unpack('<L', connection.read(struct.calcsize('<L')))[0] # giải nén dữ liệu được nhận
+                    image_stream = io.BytesIO()
+                    image_stream.write(connection.read(image_len))# viết dữ liệu đó vào image write
+                    image_stream.seek(0)# đưa con trỏ về đầu dòng
+                    image = Image.open(image_stream)# mở ảnh 
+                    # xong phần lấy ảnh(nhiểu ảnh thì thành 1 video) từ raspberry
+                    frame = cv2.cvtColor(numpy.array(image), cv2.COLOR_RGB2BGR)#chuyển kiểu dữ liệu thành 
+                    gray=cv2.cvtColor(frame,cv2.COLOR_BGR2GRAY)
+                    faces=face_casade.detectMultiScale(gray)
+                    if len(faces)==0:
+                        print("aaa")
+                    thread=threading.Thread(target=process,args=(faces,gray,conn,))
+                    thread.start()
+                        
+            except:
+                print("out")   
+        if data.decode('utf-8')=="C":
+            reply = "C"
+            conn.sendall(str.encode(reply))        
+            while True:
+                data1=conn.recv(2048)
+                if data1.decode('utf-8')!="":
+                    i=0
+                    ip=data1.decode('utf-8')
+                    x=ip.split('+')
+                    idn=x[0]
+                    name=x[1]
+                    mail=x[2]
+                    address=x[3]
+                    profile=getProfile(idn)
+                    if(profile==None):
+                        conn.sendall(str.encode("C1"))
+                        connection = conn.makefile('rb') 
+                        samplenum=0  #Tạo biến đếm ảnh
+                        Faces=[]
+                        Ids=[]
+                        while True:
+                            try:
+                                image_len = struct.unpack('<L', connection.read(struct.calcsize('<L')))[0] # giải nén dữ liệu được nhận
+                                if not image_len: # nếu không có thì out  
+                                    break
+                                image_stream = io.BytesIO() # chuyển dữ liệu thành kiểu Bytes
+                                image_stream.write(connection.read(image_len))
+                                image_stream.seek(0)
+                                image = Image.open(image_stream)# mở dữ liệu dưới dạng kiểu ảnh
+                                frame = cv2.cvtColor(numpy.array(image), cv2.COLOR_RGB2BGR) # chuyển dữ liệu thành kiểu nump array với màu gray
+                                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)# chuyển ảnh thành màu gray
+                                faces=face_casade.detectMultiScale( gray) # tìm khuông mặt trong mỗi tấm ảnh
+                                for (x, y, w, h) in faces:
+                                    cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 0, 225), 2)  # vẽ khung của khuông mặt của mỗi người trên mỗi tấm ảnh
+                                    bindata=(gray[y:y+h,x:x+w]) # căt và lấy dữ liệu của mỗi khuông mặt
+                                    cv2.imwrite('C:\\Users\\vietphu\\Documents\\img\\temp'+str(idn)+"."+str(samplenum)+'.jpg',bindata) # ghi ảnh ra một thư mục tạm
+                                    # binparams = (idn ,bindata)
+                                    # sql = 'INSERT INTO IMG (id,img) VALUES (?,?)' 
+                                    # cursor.execute(sql, binparams)# câu lệnh insert ảnh
+                                    # con.commit()   #xác nhận insert ảnh
+                                    Faces.append(bindata)
+                                    Ids.append(int(idn))
+                                    samplenum+=1 # biến đếm tăng thêm 1 ảnh
+                                print(samplenum) # in ra số lượng ảnh đã ghi
+                                if samplenum >6:                
+                                    break;  
+                            except:
+                                break        
+                                                  
+                        conn.sendall(str.encode("C3"))
+                        if not Faces:
+                            print("khong co")
+                        else:
+                            recognizer.train(Faces,numpy.asarray(Ids))
+                            if not os.path.exists('C:\\Users\\vietphu\\Documents\\recognizer'):
+                                os.makedirs('C:\\Users\\vietphu\\Documents\\recognizer')
+                            recognizer.save('C:\\Users\\vietphu\\Documents\\recognizer\\'+str(idn)+'.yml')
+                            cv2.destroyAllWindows 
+                            sql="INSERT INTO Information VALUES ("+idn+",'"+name+"','"+mail+"','"+address+"')"
+                            cursor.execute(sql)
+                            con.commit() 
+                        while True:
+                            try:
+                                data2=conn.recv(2048)
+                                if data2.decode('utf-8')=="C31":
+                                    i=1
+                                    break
+                            except:
+                                continue                          
+                    if i==1:
+                        break
+                    else:
+                        conn.sendall(str.encode("C2"))
+                        break
+            
+
+while True:
+    Client, address = ServerSocket.accept()
+    print('Connected to: ' + address[0] + ':' + str(address[1]))
+    start_new_thread(threaded_client, (Client, ))
+    ThreadCount += 1
+    print('Thread Number: ' + str(ThreadCount))
+ServerSocket.close()
